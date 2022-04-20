@@ -275,6 +275,12 @@ func (oc *Controller) addRoutesGatewayIP(pod *kapi.Pod, podAnnotation *util.PodA
 		if isIPv6 {
 			otherDefaultRoute = otherDefaultRouteV6
 		}
+
+		// HACK Alert for egress router CNI we need to have route to cluster subnets and service CIDR to be able to connect
+		// to pods on different nodes.
+		if len(pod.Labels) != 0 && pod.Labels["app"] == "egress-router-cni" {
+			otherDefaultRoute = true
+		}
 		var gatewayIP net.IP
 		hasRoutingExternalGWs := len(routingExternalGWs.gws) > 0
 		hasPodRoutingGWs := len(routingPodGWs) > 0
