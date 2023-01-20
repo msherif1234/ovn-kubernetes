@@ -1077,6 +1077,12 @@ ovn-cluster-manager() {
   fi
   echo "ovnkube_config_duration_enable_flag: ${ovnkube_config_duration_enable_flag}"
 
+  multi_network_enabled_flag=
+  if [[ ${ovn_multi_network_enable} == "true" ]]; then
+          multi_network_enabled_flag="--enable-multi-network"
+  fi
+  echo "multi_network_enabled_flag=${multi_network_enabled_flag}"
+
   echo "=============== ovn-cluster-manager ========== MASTER ONLY"
   /usr/bin/ovnkube \
     --init-cluster-manager ${K8S_NODE} \

@@ -49,7 +49,8 @@ type ClusterManager struct {
 	recorder record.EventRecorder
 
 	// retry framework for nodes
-	retryNodes *objretry.RetryFramework
+	retryNodes      *objretry.RetryFramework
+	multiNetManager *multiNetworkClusterManager
 }
 
 // NewOvnController creates a new OVN controller for creating logical network
@@ -79,7 +80,9 @@ func NewClusterManager(ovnClient *util.OVNClientset, wf *factory.WatchFactory, s
 	}
 
 	cm.initRetryFramework()
-
+	if config.OVNKubernetesFeature.EnableMultiNetwork {
+		cm.multiNetManager = newMultiNetworkClusterManager(ovnClient, cm)
+	}
 	return cm
 }
 
@@ -237,7 +240,20 @@ func (cm *ClusterManager) Run(nodeName string) error {
 		return err
 	}
 
+	if cm.multiNetManager != nil {
+		klog.Infof("Starts multi network manager")
+		return cm.multiNetManager.Run(cm.stopChan)
+	}
 	return nil
+}
+
+// Stop gracefully stops all managed controllers
+func (cm *ClusterManager) Stop() {
+	close(cm.stopChan)
+	if cm.multiNetManager != nil {
+		klog.Infof("Stops multi network manager")
+		cm.multiNetManager.Stop()
+	}
 }
 
 // WatchNodes starts the watching of node resource and calls
@@ -300,7 +316,7 @@ func (cm *ClusterManager) addUpdateNodeEvent(node *kapi.Node) error {
 	return cm.addNode(node)
 }
 
-func (cm *ClusterManager) updateNodeAnnotationWithRetry(nodeName string, hostSubnets []*net.IPNet) error {
+func (cm *ClusterManager) updateNodeAnnotationWithRetry(nodeName string, hostSubnetsMap map[string][]*net.IPNet) error {
 	// Retry if it fails because of potential conflict which is transient. Return error in the
 	// case of other errors (say temporary API server down), and it will be taken care of by the
 	// retry mechanism.
@@ -312,10 +328,12 @@ func (cm *ClusterManager) updateNodeAnnotationWithRetry(nodeName string, hostSub
 		}
 
 		cnode := node.DeepCopy()
-		cnode.Annotations, err = util.UpdateNodeHostSubnetAnnotation(cnode.Annotations, hostSubnets, types.DefaultNetworkName)
-		if err != nil {
-			return fmt.Errorf("failed to update node %q annotation subnet %s",
-				node.Name, util.JoinIPNets(hostSubnets, ","))
+		for netName, hostSubnets := range hostSubnetsMap {
+			cnode.Annotations, err = util.UpdateNodeHostSubnetAnnotation(cnode.Annotations, hostSubnets, netName)
+			if err != nil {
+				return fmt.Errorf("failed to update node %q annotation subnet %s",
+					node.Name, util.JoinIPNets(hostSubnets, ","))
+			}
 		}
 		return cm.kube.PatchNode(node, cnode)
 	})
@@ -330,9 +348,11 @@ func (cm *ClusterManager) addNode(node *kapi.Node) error {
 	if err != nil && !util.IsAnnotationNotSetError(err) {
 		// Log the error and try to allocate new subnets
 		klog.Infof("Failed to get node %s host subnets annotations: %v", node.Name, err)
+		return err
 	}
 
-	hostSubnets, allocatedSubnets, err := cm.clusterSubnetAllocator.AllocateNodeSubnets(node.Name, existingSubnets, config.IPv4Mode, config.IPv6Mode)
+	hostSubnets, allocatedSubnets, err :=
+		cm.clusterSubnetAllocator.AllocateNodeSubnets(node.Name, existingSubnets, config.IPv4Mode, config.IPv6Mode)
 	if err != nil {
 		return err
 	}
@@ -340,6 +360,7 @@ func (cm *ClusterManager) addNode(node *kapi.Node) error {
 	if len(allocatedSubnets) == 0 {
 		return nil
 	}
+	hostSubnetsMap := map[string][]*net.IPNet{types.DefaultNetworkName: hostSubnets}
 
 	// Release the allocation on error
 	defer func() {
@@ -353,7 +374,7 @@ func (cm *ClusterManager) addNode(node *kapi.Node) error {
 	// Set the HostSubnet annotation on the node object to signal
 	// to nodes that their logical infrastructure is set up and they can
 	// proceed with their initialization
-	return cm.updateNodeAnnotationWithRetry(node.Name, hostSubnets)
+	return cm.updateNodeAnnotationWithRetry(node.Name, hostSubnetsMap)
 }
 
 func (cm *ClusterManager) deleteNode(node *kapi.Node) error {
