@@ -1,4 +1,4 @@
-package networkControllerManager
+package networkAttachDefController
 
 import (
 	"context"
@@ -34,7 +34,7 @@ const (
 	// 5ms, 10ms, 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1.3s, 2.6s, 5.1s, 10.2s, 20.4s, 41s, 82s
 	// maxRetries = 15
 
-	controllerName  = "net-attach-def-controller"
+	ControllerName  = "net-attach-def-controller"
 	avoidResync     = 0
 	numberOfWorkers = 2
 	qps             = 15
@@ -126,13 +126,13 @@ func NewNetAttachDefinitionController(ncm NetworkControllerManager, ovnClientset
 func (nadController *NetAttachDefinitionController) Run(stopChan <-chan struct{}) error {
 	defer utilruntime.HandleCrash()
 	defer func() {
-		klog.Infof("Shutting down controller %s", controllerName)
+		klog.Infof("Shutting down controller %s", ControllerName)
 		nadController.queue.ShutDown()
 	}()
 
 	nadController.nadFactory.Start(stopChan)
-	klog.Infof("Starting controller %s", controllerName)
-	if !cache.WaitForNamedCacheSync(controllerName, stopChan, nadController.netAttachDefSynced) {
+	klog.Infof("Starting controller %s", ControllerName)
+	if !cache.WaitForNamedCacheSync(ControllerName, stopChan, nadController.netAttachDefSynced) {
 		return fmt.Errorf("error syncing cache")
 	}
 
@@ -141,7 +141,7 @@ func (nadController *NetAttachDefinitionController) Run(stopChan <-chan struct{}
 		return fmt.Errorf("failed to sync all existing NAD entries: %v", err)
 	}
 
-	klog.Info("Starting workers for controller %s", controllerName)
+	klog.Info("Starting workers for controller %s", ControllerName)
 	wg := &sync.WaitGroup{}
 	for i := 0; i < numberOfWorkers; i++ {
 		wg.Add(1)
@@ -159,9 +159,9 @@ func (nadController *NetAttachDefinitionController) Run(stopChan <-chan struct{}
 
 func (nadController *NetAttachDefinitionController) SyncNetworkControllers() (err error) {
 	startTime := time.Now()
-	klog.V(4).Infof("Starting repairing loop for %s", controllerName)
+	klog.V(4).Infof("Starting repairing loop for %s", ControllerName)
 	defer func() {
-		klog.V(4).Infof("Finished repairing loop for %s: %v err: %v", controllerName,
+		klog.V(4).Infof("Finished repairing loop for %s: %v err: %v", ControllerName,
 			time.Since(startTime), err)
 	}()
 

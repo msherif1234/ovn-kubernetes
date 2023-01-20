@@ -250,6 +250,15 @@ func (cm *ClusterManager) Run(nodeName string) error {
 	return nil
 }
 
+// Stop gracefully stops all managed controllers
+func (cm *ClusterManager) Stop() {
+	close(cm.stopChan)
+	if cm.multiNetManager != nil {
+		klog.Infof("Stops multi network manager")
+		cm.multiNetManager.Stop()
+	}
+}
+
 // WatchNodes starts the watching of node resource and calls
 // back the appropriate handler logic
 func (cm *ClusterManager) WatchNodes() error {

@@ -260,6 +260,7 @@ func runOvnKube(ctx *cli.Context, cancel context.CancelFunc) error {
 		if err := cm.Start(clusterManager, wg, ctx.Context); err != nil {
 			return err
 		}
+		defer cm.Stop()
 	}
 
 	if master != "" {
