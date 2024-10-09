@@ -29,6 +29,13 @@ type Cookie struct {
 	ObsPointID  uint32
 }
 
+type ObservMetadata struct {
+	actor     string
+	action    string
+	name      string
+	direction string
+}
+
 const CookieSize = 8
 const bridgeName = "br-int"
 
@@ -117,45 +124,66 @@ func findACLBySample(nbClient client.Client, acl *nbdb.ACL) ([]*nbdb.ACL, error)
 	return found, err
 }
 
-func (d *SampleDecoder) DecodeCookieIDs(obsDomainID, obsPointID uint32) (string, error) {
+func (d *SampleDecoder) decodeCookieCommon(obsDomainID, obsPointID uint32) (interface{}, error) {
+	var dbObj interface{}
 	// Find sample using obsPointID
 	sample, err := libovsdbops.FindSample(d.nbClient, int(obsPointID))
 	if err != nil || sample == nil {
-		return "", fmt.Errorf("find sample failed: %w", err)
+		return dbObj, fmt.Errorf("find sample failed: %w", err)
 	}
 	// find db object using observ application ID
 	// Since ACL is indexed both by sample_new and sample_est, when searching by one of them,
 	// we need to make sure the other one will not match.
 	// nil is a valid index value, therefore we have to use non-existing UUID.
 	wrongUUID := "wrongUUID"
-	var dbObj interface{}
 	switch getObservAppID(obsDomainID) {
 	case observability.ACLNewTrafficSamplingID:
 		acls, err := findACLBySample(d.nbClient, &nbdb.ACL{SampleNew: &sample.UUID, SampleEst: &wrongUUID})
 		if err != nil {
-			return "", fmt.Errorf("find acl for sample failed: %w", err)
+			return dbObj, fmt.Errorf("find acl for sample failed: %w", err)
 		}
 		if len(acls) != 1 {
-			return "", fmt.Errorf("expected 1 ACL, got %d", len(acls))
+			return dbObj, fmt.Errorf("expected 1 ACL, got %d", len(acls))
 		}
 		dbObj = acls[0]
 	case observability.ACLEstTrafficSamplingID:
 		acls, err := findACLBySample(d.nbClient, &nbdb.ACL{SampleNew: &wrongUUID, SampleEst: &sample.UUID})
 		if err != nil {
-			return "", fmt.Errorf("find acl for sample failed: %w", err)
+			return dbObj, fmt.Errorf("find acl for sample failed: %w", err)
 		}
 		if len(acls) != 1 {
-			return "", fmt.Errorf("expected 1 ACL, got %d", len(acls))
+			return dbObj, fmt.Errorf("expected 1 ACL, got %d", len(acls))
 		}
 		dbObj = acls[0]
 	default:
-		return "", fmt.Errorf("unknown app ID: %d", getObservAppID(obsDomainID))
+		return dbObj, fmt.Errorf("unknown app ID: %d", getObservAppID(obsDomainID))
+	}
+	return dbObj, nil
+}
+
+func (d *SampleDecoder) DecodeCookieIDs(obsDomainID, obsPointID uint32) (string, error) {
+	dbObj, err := d.decodeCookieCommon(obsDomainID, obsPointID)
+	if err != nil {
+		return "", err
 	}
 	msg := getMessage(dbObj)
 	if msg == "" {
 		return "", fmt.Errorf("failed to get message for db object %v", dbObj)
 	}
 	return msg, nil
+}
+
+func (d *SampleDecoder) DecodeCookieIDsToMetaData(obsDomainID, obsPointID uint32) (ObservMetadata, error) {
+	var md ObservMetadata
+	dbObj, err := d.decodeCookieCommon(obsDomainID, obsPointID)
+	if err != nil {
+		return md, err
+	}
+	md, err = getMessageInMetaData(dbObj)
+	if err != nil {
+		return md, err
+	}
+	return md, nil
 }
 
 func getMessage(dbObj interface{}) string {
@@ -200,6 +228,33 @@ func getMessage(dbObj interface{}) string {
 	}
 }
 
+func getMessageInMetaData(dbObj interface{}) (ObservMetadata, error) {
+	md := ObservMetadata{}
+	switch o := dbObj.(type) {
+	case *nbdb.ACL:
+		switch o.Action {
+		case nbdb.ACLActionAllow, nbdb.ACLActionAllowRelated, nbdb.ACLActionAllowStateless:
+			md.action = "Allowed"
+		case nbdb.ACLActionDrop:
+			md.action = "Dropped"
+		case nbdb.ACLActionPass:
+			md.action = "Delegated to network policy"
+		default:
+			md.action = "Action " + o.Action
+		}
+		actor := o.ExternalIDs[libovsdbops.OwnerTypeKey.String()]
+		md.actor = actor
+		md.name = o.ExternalIDs[libovsdbops.ObjectNameKey.String()]
+		md.direction = o.ExternalIDs[libovsdbops.PolicyDirectionKey.String()]
+		if actor == libovsdbops.NetpolNodeOwnerType {
+			md.name = "default allow from local node policy"
+			md.direction = "ingress"
+		}
+		return md, nil
+	}
+	return md, fmt.Errorf("failed to get observ metadata for db object %v", dbObj)
+}
+
 func (d *SampleDecoder) DecodeCookieBytes(cookie []byte) (string, error) {
 	if uint64(len(cookie)) != CookieSize {
 		return "", fmt.Errorf("invalid cookie size: %d", len(cookie))
@@ -219,6 +274,16 @@ func (d *SampleDecoder) DecodeCookie8Bytes(cookie [8]byte) (string, error) {
 		return "", err
 	}
 	return d.DecodeCookieIDs(c.ObsDomainID, c.ObsPointID)
+}
+
+func (d *SampleDecoder) DecodeCookie8BytesinObservMetaData(cookie [8]byte) (ObservMetadata, error) {
+	c := Cookie{}
+	md := ObservMetadata{}
+	err := binary.Read(bytes.NewReader(cookie[:]), SampleEndian, &c)
+	if err != nil {
+		return md, err
+	}
+	return d.DecodeCookieIDsToMetaData(c.ObsDomainID, c.ObsPointID)
 }
 
 func getGroupID(groupID *int) string {
